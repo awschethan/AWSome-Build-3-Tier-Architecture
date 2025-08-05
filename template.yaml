@@ -1,0 +1,837 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for VPC with Auto Scaling, ALB, RDS, and CloudFront
+
+# Define the inital input parameters related to the RDS , EC2, CloudFront Alias and ACM certificate.
+Parameters:
+# Define RDS Instance Family 
+  DBInstanceClass:
+    Description: Database instance type
+    Type: String
+    Default: db.t3.small
+    AllowedValues:
+      - db.t3.small
+      - db.t3.medium
+      - db.t4g.small
+      - db.t4g.medium
+# Define DBName 
+  DBName:
+    Description: Database name
+    Type: String
+    Default: mydb
+    AllowedPattern: ^[a-zA-Z0-9]*
+# Define EC2 Instance Family  
+  EC2InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: m7i-flex.large
+    AllowedValues:
+      - m7i-flex.large
+      - m7i.large
+      - m7g.large
+      - m7a.large
+      - c6i.large
+      - c6a.large
+      - r6i.large
+      - r6a.large
+      - r5.large
+      - t3.large
+# Domain Name of the WebServer
+  CloudFrontAlias:
+    Description: Cloudfront alias name or CNAME prefix
+    Type: String
+# Add Domain Name Certificate 
+  ACMARN:
+    Description: ACM ARN certificate of the Domain Name
+    Type: String
+# Add Domain Name Certificate for Regional ALB
+  ACMRegionalARN:
+    Description: ACM ARN certificate of the Domain Name
+    Type: String
+# Enviroment  Name to be used for Naming convenstion  
+  EnvironmentName:
+    Description: Environment name for tagging
+    Type: String
+    Default: Production
+
+# CloudFornt Prefix Can add the other region, for this we have added two region.
+Mappings:
+  AWSRegions2PrefixListID:
+    eu-west-1:
+      PrefixList: pl-4fa04526
+    us-east-1:
+      PrefixList: pl-3b927c52
+
+Resources:
+# Create VPC with the CIDR 10.0.0.0/16
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: MyVPC
+# Create 4 Private Subnets and 2 Public Subnets with CIDR of /24 for the above VPC 
+  # Public Subnets 1
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
+  # Public Subnets 2
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs ''
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 2
+  # Private Subnets 1
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: Private Subnet 1
+  # Private Subnets 2
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: Private Subnet 2
+  # Private Subnets 3
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.5.0/24
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: Private Subnet 3
+  # Private Subnets 4
+  PrivateSubnet4:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.6.0/24
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: Private Subnet 4
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: MyIGW
+# Attach InternetGateway to VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Elastic IPs for NAT Gateways
+  NatGatewayEIP1:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: NAT Gateway EIP 1
+  # 2 Elastic IPs for NAT Gateways
+  NatGatewayEIP2:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: NAT Gateway EIP 2
+
+  # NAT Gateways
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: NAT Gateway 1
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: NAT Gateway 2
+
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public Route Table
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Public Subnet Association to Public Subents
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # Create separate route tables for each AZ's private subnets
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Private Route Table 1
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Private Route Table 2
+
+  # Routes for private subnets through NAT Gateways
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  # Update Private Subnet Route Table Associations
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet3
+      RouteTableId: !Ref PrivateRouteTable1
+  PrivateSubnet4RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet4
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # Create Securrity Group for ALB and allow access from CloudFront Prefix
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvironmentName}-WebServerSG
+      GroupDescription: Security group for ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourcePrefixListId: !FindInMap [AWSRegions2PrefixListID, !Ref 'AWS::Region', PrefixList]
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-WebServerSG
+  
+    # Create Securrity Group for EC2 and allow access from ALBSecurityGroup on 80 and 443
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvironmentName}-EC2SG
+      GroupDescription: Security group for EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-EC2SG
+
+  # Create Security Group for RDS and allow access from EC2 instance
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: RDS Security Group
+
+# Create Security Group for EFS and allow access from EC2 instance
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EFS Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: EFS Security Group
+
+    # Create Elastic File System
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: MyEFS
+      ThroughputMode: bursting
+
+  MountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnet3
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  MountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnet4
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # Create RDS Subnet Group with private subnets
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: RDS Subnet Group
+      SubnetIds:
+        - !Ref PrivateSubnet3
+        - !Ref PrivateSubnet4
+
+  # DBSecret for RDS
+ # DBSecret:
+  #  Type: AWS::SecretsManager::Secret
+  #  Properties:
+   #   Name: !Sub ${EnvironmentName}-db-secret
+    #  Description: 'RDS database credentials'      
+     # GenerateSecretString:
+     #   SecretStringTemplate: '{"username": "adminrds"}'
+      #  GenerateStringKey: 'password'
+      #  PasswordLength: 16
+      #  ExcludeCharacters: '"@/\'
+
+# First, create the Lambda execution role
+LambdaExecutionRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+    ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Policies:
+      - PolicyName: SecretsManagerAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:CreateSecret
+                - secretsmanager:PutSecretValue
+                - secretsmanager:UpdateSecret
+                - secretsmanager:DeleteSecret
+              Resource: '*'
+
+# Lambda function to generate credentials
+CredentialsGeneratorFunction:
+  Type: AWS::Lambda::Function
+  Properties:
+    Runtime: python3.9
+    Handler: index.handler
+    Role: !GetAtt LambdaExecutionRole.Arn
+    Code:
+      ZipFile: |
+        import cfnresponse
+        import random
+        import string
+        import boto3
+        import json
+
+        def generate_username(length=8):
+            letters = string.ascii_lowercase
+            return ''.join(random.choice(letters) for i in range(length))
+
+        def generate_password(length=16):
+            chars = string.ascii_letters + string.digits + "!@#$%^&*()"
+            return ''.join(random.choice(chars) for i in range(length))
+
+        def handler(event, context):
+            try:
+                if event['RequestType'] in ['Create', 'Update']:
+                    username = generate_username()
+                    password = generate_password()
+                    
+                    # Create or update secret
+                    secrets_client = boto3.client('secretsmanager')
+                    secret_name = event['ResourceProperties']['SecretName']
+                    
+                    secret_value = {
+                        'username': username,
+                        'password': password
+                    }
+                    
+                    try:
+                        secrets_client.create_secret(
+                            Name=secret_name,
+                            SecretString=json.dumps(secret_value)
+                        )
+                    except secrets_client.exceptions.ResourceExistsException:
+                        secrets_client.update_secret(
+                            SecretId=secret_name,
+                            SecretString=json.dumps(secret_value)
+                        )
+                    
+                    responseData = {'SecretARN': f'arn:aws:secretsmanager:{context.invoked_function_arn.split(":")[3]}:{context.invoked_function_arn.split(":")[4]}:secret:{secret_name}'}
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                
+                elif event['RequestType'] == 'Delete':
+                    # Optional: Delete the secret
+                    secrets_client = boto3.client('secretsmanager')
+                    secret_name = event['ResourceProperties']['SecretName']
+                    try:
+                        secrets_client.delete_secret(
+                            SecretId=secret_name,
+                            ForceDeleteWithoutRecovery=True
+                        )
+                    except:
+                        pass
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                    
+            except Exception as e:
+                print(e)
+                cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+# Custom resource to invoke the Lambda function
+DBCredentialsGenerator:
+  Type: Custom::DBCredentialsGenerator
+  Properties:
+    ServiceToken: !GetAtt CredentialsGeneratorFunction.Arn
+    SecretName: !Sub ${EnvironmentName}-db-secret
+
+# Reference the generated credentials in RDS instance
+RDSInstance:
+  Type: AWS::RDS::DBInstance
+  Properties:
+    # ... other RDS properties ...
+
+  # Create RDSDatabase with mysql and enable multi az
+  RDSDatabase:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceClass: !Ref DBInstanceClass
+      DBInstanceIdentifier: !Ref DBName
+      DBName: !Ref DBName
+      AllocatedStorage: '20'
+      Engine: mysql
+      MasterUsername: !Join 
+        - ''
+        - ['{{resolve:secretsmanager:', !Ref DBSecret, ':SecretString:username}}']
+      MasterUserPassword: !Join 
+        - ''
+        - ['{{resolve:secretsmanager:', !Ref DBSecret, ':SecretString:password}}']
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      MultiAZ: true
+  
+      Tags:
+        - Key: Name
+          Value: MyRDSInstance
+
+  # IAM Roles and Policies
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-EC2InstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: EC2CustomPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                Resource: !GetAtt FileSystem.Arn
+              # Add new permissions for Secrets Manager and CloudFormation 
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref DBSecret
+              - Effect: Allow
+                Action:
+                  - cloudformation:SignalResource
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                Resource: !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${DBName}'
+
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2InstanceRole
+
+  LaunchTemplate:
+      Type: AWS::EC2::LaunchTemplate
+      DependsOn: 
+        - RDSDatabase
+      Metadata:
+        AWS::CloudFormation::Init:
+          configSets:
+            default:
+              - install_packages
+              - mount_efs
+              - configure_web
+              - configure_db
+              - start_services
+  
+          install_packages:
+            commands:
+              01_install_base_packages:
+                command: |
+                  yum update -y
+                  yum install -y amazon-efs-utils httpd mariadb jq
+              02_install_php:
+                command: |
+                  yum install -y php php-common php-pear
+                  yum install -y php-{cgi,curl,mbstring,gd,mysqlnd,gettext,xml,fpm,intl,zip}
+  
+          mount_efs:
+            commands:
+              01_create_mount_point:
+                command: "mkdir -p /var/www"
+              02_mount_efs:
+                command: !Sub |
+                  mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www
+              03_update_fstab:
+                command: !Sub |
+                  echo "${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 0 0" >> /etc/fstab
+              04_set_permissions:
+                command: |
+                  chown apache:apache -R /var/www
+                  chmod 755 -R /var/www
+                  usermod -a -G apache ec2-user
+  
+          configure_web:
+            files:
+              /var/www/html/health.html:
+                content: |
+                  <html><body><h1>ALB Health Check</h1></body></html>
+            commands:
+              01_create_directories:
+                command: |
+                  mkdir -p /var/www/html
+                  mkdir -p /var/www/inc
+  
+          configure_db:
+            commands:
+              01_create_db_config:
+                command: !Sub |
+                  DBSecrets=$(aws secretsmanager get-secret-value --secret-id ${DBSecret} --region ${AWS::Region} --query SecretString --output text)
+                  DBUser=$(echo $DBSecrets | jq -r '.username')
+                  DBPassword=$(echo $DBSecrets | jq -r '.password')
+                  RDSEndpoint=$(aws rds describe-db-instances --db-instance-identifier ${DBName} --region ${AWS::Region} --query 'DBInstances[0].Endpoint.Address' --output text)
+                  
+                  cat << EOF > /var/www/inc/dbinfo.inc
+                  <?php
+                  \$dbendpoint = "$RDSEndpoint";
+                  \$dbname = "${DBName}";
+                  \$dbuser = "$DBUser";
+                  \$dbpassword = "$DBPassword";
+                  ?>
+                  EOF
+                  
+                  chown apache:apache /var/www/inc/dbinfo.inc
+                  chmod 640 /var/www/inc/dbinfo.inc
+  
+          start_services:
+            services:
+              sysvinit:
+                httpd:
+                  enabled: true
+                  ensureRunning: true
+      Properties:
+        LaunchTemplateName: !Sub ${EnvironmentName}-LaunchTemplate
+        LaunchTemplateData:
+          ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}'
+          InstanceType: !Ref EC2InstanceType
+          IamInstanceProfile:
+            Name: !Ref EC2InstanceProfile
+          SecurityGroupIds: 
+            - !Ref EC2SecurityGroup
+          UserData:
+            Fn::Base64: !Sub |
+              #!/bin/bash
+              # Enable logging
+              exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+              
+              # Install AWS CFN tools
+              yum update -y aws-cfn-bootstrap
+              
+              # Install packages and configure
+              /opt/aws/bin/cfn-init -v \
+                --stack ${AWS::StackName} \
+                --resource LaunchTemplate \
+                --configsets default \
+                --region ${AWS::Region}
+
+# Create AutoScalingGroup with the above launch template and ALB TargetGroup
+  AutoScalingGroup:
+    DependsOn:
+      - RDSDatabase
+      - FileSystem
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 4
+      DesiredCapacity: 2
+      Cooldown: 300
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      Tags:
+        - Key: Name
+          Value: MyAutoScalingGroup
+          PropagateAtLaunch: true  
+
+  # Application Load balancer Target Group 
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-WebServerTG
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      HealthCheckPath: /health.html
+      HealthCheckProtocol: HTTP
+      TargetType: instance
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-WebServerTG
+
+  # Application Load balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${EnvironmentName}-WebServerLB
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-WebServerLB
+
+    # Application Load balancer Listener with 443 and ACM certificate form input 
+  HTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Certificates:
+        - CertificateArn: !Ref ACMRegionalARN
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+
+# CloudFront Distribution for ALB Origin and ACM form the input along with Alias name from the input 
+  # CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Aliases: 
+          - !Ref CloudFrontAlias
+        Origins:
+          - DomainName: !GetAtt LoadBalancer.DNSName
+            Id: ALBOrigin
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: ALBOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: true
+            Cookies:
+              Forward: all
+            Headers:
+              - Host
+              - Origin
+              - Authorization
+              - Access-Control-Request-Headers
+              - Access-Control-Request-Method
+          Compress: true
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 0
+        HttpVersion: http2
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref ACMARN
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+#   outputs of VPC ID, RDS, CloudFront Distribution Domain Name and ALB 
+Outputs:
+    VPCID:
+        Description: VPC ID
+        Value: !Ref VPC
+        Export:
+          Name: !Sub ${EnvironmentName}-VPCID
+    
+    RDSEndpoint:
+        Description: RDS DB Endpoint
+        Value: !GetAtt RDSDatabase.Endpoint.Address
+        Export:
+          Name: !Sub ${EnvironmentName}-RDSEndpoint
+
+    CloudFrontDistribution:
+        Description: CloudFront Distribution
+        Value: !Ref CloudFrontDistribution
+        Export:
+          Name: !Sub ${EnvironmentName}-CloudFrontDistribution
+
+    ALB:
+        Description: ALB DNS Name
+        Value: !GetAtt LoadBalancer.DNSName
+        Export:
+          Name: !Sub ${EnvironmentName}-ALB
